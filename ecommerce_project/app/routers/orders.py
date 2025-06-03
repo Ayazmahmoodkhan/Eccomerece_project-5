@@ -1,30 +1,44 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import selectinload
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from sqlalchemy.orm import Session, selectinload, joinedload
 from typing import List
 from datetime import datetime, timedelta
 from app import models, schemas
+from app.models import Order, User, OrderStatus
 from app.database import get_db
 from app.auth import get_current_user
+from app.send_email import send_payment_confirmation, send_order_notification_to_admin
 import stripe
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
+
 #  Create Order 
 
 @router.post("/", response_model=schemas.OrderResponse, status_code=status.HTTP_201_CREATED)
-def create_order(
+def create_order_with_shipping(
     order_data: schemas.OrderCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
+    if not order_data.shipping_details:
+        raise HTTPException(status_code=400, detail="Shipping details are required.")
 
     total_amount = 0
     item_details = []
     max_shipping_days = 0
 
     for item in order_data.order_items:
-        variant = db.query(models.ProductVariant).filter(models.ProductVariant.id == item.variant_id).first()
+        variant = db.query(models.ProductVariant)\
+            .options(
+                selectinload(models.ProductVariant.product),
+                selectinload(models.ProductVariant.images)
+            )\
+            .filter(models.ProductVariant.id == item.variant_id)\
+            .first()
+
         if not variant:
             raise HTTPException(status_code=404, detail=f"Variant ID {item.variant_id} not found")
 
@@ -37,95 +51,182 @@ def create_order(
         if variant.shipping_time and variant.shipping_time > max_shipping_days:
             max_shipping_days = variant.shipping_time
 
+        # Store enriched item data
         item_details.append({
-            "product_id": item.product_id,
+            "product_id": variant.product.id,
             "variant_id": item.variant_id,
             "mrp": price,
             "quantity": item.quantity,
             "total_price": round(item_total, 2)
         })
 
-    # ---- Apply coupon if exists ----
+    # Coupon logic
     coupon_discount_amount = 0
-    coupon_obj = None
     if order_data.coupon_id:
-        coupon_obj = db.query(models.Coupon).filter(models.Coupon.id == order_data.coupon_id, models.Coupon.is_active == True).first()
-        if not coupon_obj:
+        coupon = db.query(models.Coupon).filter(
+            models.Coupon.id == order_data.coupon_id,
+            models.Coupon.is_active == True
+        ).first()
+        if not coupon:
             raise HTTPException(status_code=400, detail="Invalid or expired coupon")
 
-        if coupon_obj.discount_type == "percentage":
-            coupon_discount_amount = total_amount * (coupon_obj.discount_value / 100)
-        elif coupon_obj.discount_type == "fixed":
-            coupon_discount_amount = coupon_obj.discount_value
+        if coupon.discount_type == "percentage":
+            coupon_discount_amount = total_amount * (coupon.discount_value / 100)
+        elif coupon.discount_type == "fixed":
+            coupon_discount_amount = coupon.discount_value
 
-    final_amount = total_amount - coupon_discount_amount
-    if final_amount < 0:
-        final_amount = 0
+    final_amount = max(total_amount - coupon_discount_amount, 0)
 
     order_date = datetime.utcnow()
     shipping_date = order_date + timedelta(days=max_shipping_days)
 
-    # ---- Create Order ----
+    # Create Order
     new_order = models.Order(
         order_date=order_date,
         order_amount=round(total_amount, 2),
         shipping_date=shipping_date,
-        order_status=order_data.order_status,
+        order_status=order_data.order_status or "pending",
         coupon_id=order_data.coupon_id,
         discount_amount=round(coupon_discount_amount, 2),
         final_amount=round(final_amount, 2),
-        user_id=current_user.id  
-  
+        user_id=current_user.id
     )
     db.add(new_order)
     db.commit()
     db.refresh(new_order)
 
-
-    # ---- Create Order Items ----
+    # Create Order Items
     for item in item_details:
-        order_item = models.OrderItem(
+        db.add(models.OrderItem(
             order_id=new_order.id,
             product_id=item["product_id"],
             variant_id=item["variant_id"],
             mrp=item["mrp"],
             quantity=item["quantity"],
             total_price=item["total_price"]
-        )
-        db.add(order_item)
+        ))
+
+    # Create Shipping Details
+    shipping_data = order_data.shipping_details.model_dump()
+    shipping_data.pop("shipping_date", None)
+
+    db.add(models.ShippingDetails(
+        **shipping_data,
+        user_id=current_user.id,
+        order_id=new_order.id,
+        shipping_date=shipping_date
+    ))
 
     db.commit()
-    return db.query(models.Order)\
-             .options(selectinload(models.Order.order_items))\
-             .filter(models.Order.id == new_order.id).first()
+
+    # Final fetch with relationships
+    created_order = db.query(models.Order)\
+        .options(
+            selectinload(models.Order.order_items)
+            .selectinload(models.OrderItem.variant)
+            .selectinload(models.ProductVariant.product),
+            selectinload(models.Order.order_items)
+            .selectinload(models.OrderItem.variant)
+            .selectinload(models.ProductVariant.images),
+            selectinload(models.Order.shipping_details)
+        )\
+        .filter(models.Order.id == new_order.id)\
+        .first()
+
+    # Enrich returned order_items with extra fields (attached dynamically)
+    for item in created_order.order_items:
+        variant = item.variant
+        if variant:
+            item.product_name = variant.product.product_name if variant.product else None
+            item.variant_attributes = variant.attributes
+            item.variant_image = variant.images[0].image_url if variant.images else None
+
+    # Send email to admin
+    send_order_notification_to_admin(background_tasks, db, current_user, created_order)
+
+
+    return created_order
+
+
+
+
 
 #Get all Orders with Items
+
+
 @router.get("/", response_model=List[schemas.OrderResponse])
-def get_all_orders(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role == "admin":
-        return db.query(models.Order).options(selectinload(models.Order.order_items)).all()
-    else:
-        return db.query(models.Order).filter(models.Order.user_id == current_user.id).options(selectinload(models.Order.order_items)).all()
+def get_all_orders(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+    # skip: int = 0,
+    # limit: int = 10
+):
+    query = db.query(models.Order).options(
+        selectinload(models.Order.order_items)
+            .selectinload(models.OrderItem.variant)
+            .selectinload(models.ProductVariant.product),
+        selectinload(models.Order.order_items)
+            .selectinload(models.OrderItem.variant)
+            .selectinload(models.ProductVariant.images),
+        joinedload(models.Order.shipping_details)
+    )
+
+    if current_user.role != "admin":
+        query = query.filter(models.Order.user_id == current_user.id)
+
+    orders = query.all()
+
+    # orders = query.offset(skip).limit(limit).all()
+
+    for order in orders:
+        for item in order.order_items:
+            variant = item.variant
+            if variant:
+                item.product_name = variant.product.product_name if variant.product else None
+                item.variant_attributes = variant.attributes
+                item.variant_image = variant.images[0].image_url if variant.images else None
+
+    return orders
+
+
     
 # Get single Order by ID with Items
 @router.get("/{order_id}", response_model=schemas.OrderResponse)
-def get_order(order_id: int, db: Session = Depends(get_db),current_user:models.User=Depends(get_current_user)):
-    order = db.query(models.Order)\
-              .options(selectinload(models.Order.order_items)).filter(models.Order.id == order_id).first()
+def get_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    order = db.query(models.Order).options(
+        selectinload(models.Order.order_items)
+            .selectinload(models.OrderItem.variant)
+            .selectinload(models.ProductVariant.product),
+        selectinload(models.Order.order_items)
+            .selectinload(models.OrderItem.variant)
+            .selectinload(models.ProductVariant.images),
+        joinedload(models.Order.shipping_details)
+    ).filter(models.Order.id == order_id).first()
 
     if not order:
         raise HTTPException(status_code=404, detail=f"Order with ID {order_id} not found")
-    if current_user.role != "admin":
-        if order.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="You are not authorized to view this order")
-    
+
+    if current_user.role != "admin" and order.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You are not authorized to view this order")
+
+    for item in order.order_items:
+        variant = item.variant
+        if variant:
+            item.product_name = variant.product.product_name if variant.product else None
+            item.variant_attributes = variant.attributes
+            item.variant_image = variant.images[0].image_url if variant.images else None
+
     return order
 
 # Cancel Order 
 @router.put("/cancel/{order_id}")
 def cancel_order(order_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
-      # Authorization check
+    
     if not current_user.role=="admin" and order.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="You are not allowed to cancel this order")
     
@@ -181,7 +282,7 @@ def get_refunds(order_id: int, db: Session = Depends(get_db), current_user: mode
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
-    if not current_user.is_admin and order.user_id != current_user.id:
+    if current_user.role !="admin"  and order.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="You are not allowed to view refunds for this order")
 
     return refunds
@@ -213,10 +314,10 @@ def apply_coupon(order_id: int, request: schemas.ApplyCouponRequest, db: Session
         discount_amount = coupon.discount_value
 
 
-    discount_amount = min(discount_amount, order.order_amount)  # discount zyada na ho order se
+    discount_amount = min(discount_amount, order.order_amount)  
 
     # Update Order
-    order.coupon_id = coupon.id  # Link by ID
+    order.coupon_id = coupon.id  
     order.discount_amount = discount_amount
     order.final_amount = order.order_amount - discount_amount
 
@@ -234,12 +335,97 @@ def apply_coupon(order_id: int, request: schemas.ApplyCouponRequest, db: Session
 
 #  Delete Order 
 @router.delete("/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_order(order_id: int, db: Session = Depends(get_db)):
+def delete_order(order_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if not current_user.role == "admin" and order.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You are not authorized to delete this order")
 
     db.query(models.OrderItem).filter(models.OrderItem.order_id == order_id).delete(synchronize_session=False)
     db.delete(order)
     db.commit()
     return {"detail": "Order and associated items deleted successfully"}
+
+@router.put("/{order_id}/status")
+def update_order_status(
+    order_id: int,
+    status: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_user)
+):
+    if not admin.role == "admin":
+        raise HTTPException(status_code=403, detail="Only admins can update order status")
+    # Convert string to enum safely
+    try:
+        status_enum = OrderStatus(status.capitalize())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid order status. Must be one of: Pending, Confirmed, Shipped, Delivered, Cancelled"
+        )
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.order_status == status_enum:
+        raise HTTPException(status_code=400, detail="Order status is already set to this value")
+    order.order_status = status_enum
+    db.commit()
+    return {"message": f"Order {order_id} status updated to {status_enum.value}"}
+
+
+# Order Tracking 
+
+
+@router.get("/track-order/{order_id}", response_model=schemas.OrderTrackingResponse)
+def track_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # 👈 Secure user access
+):
+    order = db.query(Order).filter(Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+
+    if order.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this order")
+
+    now = datetime.utcnow()
+    message = ""
+    countdown = None
+
+    if order.order_status == OrderStatus.cancelled:
+        message = f"Order was cancelled. Reason: {order.cancel_reason or 'Not specified'}"
+
+    elif order.order_status == OrderStatus.delivered:
+        message = "Order delivered successfully"
+
+    elif order.shipping_date:
+        if now < order.shipping_date:
+            remaining = order.shipping_date - now
+            countdown = str(remaining).split('.')[0]
+            message = f"Order confirmed – will be shipped in a Day and Delivered in {countdown}"
+
+        elif order.order_status == OrderStatus.shipped:
+            expected_delivery = order.shipping_date + timedelta(days=2)
+            if now < expected_delivery:
+                remaining = expected_delivery - now
+                countdown = str(remaining).split('.')[0]
+                message = f"Order shipped – will arrive in {countdown}"
+            else:
+                message = "Order reached your city – out for delivery"
+
+        else:
+            message = "Order confirmed – shipping in progress"
+    else:
+        message = "Order processing – shipping date not available"
+
+    return schemas.OrderTrackingResponse(
+        order_id=order.id,
+        order_status=order.order_status.value,
+        message=message,
+        countdown=countdown
+    )

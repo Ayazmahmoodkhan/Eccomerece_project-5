@@ -1,10 +1,28 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator,condecimal, conint
+from pydantic import BaseModel, EmailStr, Field, field_validator,condecimal, conint, ConfigDict, validator
+
 from datetime import date,datetime
 from enum import Enum
 from typing import Optional, List, Any, Literal,Dict
 from app.models import RatingEnum
 
+# website logo schema
+class WebsiteLogoBase(BaseModel):   
+    name: str
+    logo_path: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+class WebsiteLogoCreate(WebsiteLogoBase):
+    pass
+class WebsiteLogoUpdate(WebsiteLogoBase):
+    name: Optional[str] = None
+    logo_path: Optional[str] = None
+class WebsiteLogoResponse(WebsiteLogoBase):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime]
 
+    model_config = ConfigDict(from_attributes=True)
+
+# User Schemas
 class UserCreate(BaseModel):
     name: str = Field(..., min_length=3, max_length=50)
     username: str = Field(..., min_length=3, max_length=25)
@@ -23,8 +41,9 @@ class UserResponse(BaseModel):
     email: EmailStr
     role: str
 
-    class Config:
-        orm_mode = True
+    model_config=ConfigDict(from_attributes=True)
+class UserUpdate(BaseModel):
+    is_active: bool
 
 class ResetPasswordRequest(BaseModel):
     token: str
@@ -36,6 +55,7 @@ class Addressbase(BaseModel):
     city:str
     state:str
     postal_code:str
+    country:str
 class AddressCreate(Addressbase):
     pass
 class AddressUpdate(Addressbase):
@@ -43,8 +63,7 @@ class AddressUpdate(Addressbase):
 class AddressResponse(Addressbase):
     id:int
     user_id:int
-    class Config:
-        from_attributes=True
+    model_config = ConfigDict(from_attributes=True)
 #end
 #schema for user profile
 class UserProfileBase(BaseModel):
@@ -63,8 +82,7 @@ class UserProfileResponse(UserProfileBase):
     id: int
     user_id: int
 
-    class Config:
-        from_attributes=True
+    model_config = ConfigDict(from_attributes=True)
 #end
 
 
@@ -85,29 +103,41 @@ class CategoryUpdate(BaseModel):
 class CategoryResponse(CategoryBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
 
 
 from decimal import Decimal
 from typing_extensions import Annotated
+
+
+# ---------------- Variant Schemas ----------------
+
 class ProductVariantBase(BaseModel):
-    price: Annotated[Decimal, Field(gt=0)]  
-    stock: Annotated[int, Field(ge=0)] 
-    discount: Optional[Annotated[int, Field(ge=0, le=100)]] = 0  
-    shipping_time: Optional[Annotated[int, Field(ge=0)]] = None  
-    attributes: Dict[str, str]
+    price: Annotated[Decimal, Field(gt=0)]
+    stock: Annotated[int, Field(ge=0)]
+    discount: Optional[Annotated[int, Field(ge=0, le=100)]] = 0
+    shipping_time: Optional[Annotated[int, Field(ge=0)]] = None
+    attributes: Dict[str, Any]
 
 class ProductVariantCreate(ProductVariantBase):
-    images: List[str]  
+    images: List[str]
+
 class ProductVariantResponse(ProductVariantBase):
     id: int
     images: List[str]
 
-    class Config:
-        from_attributes = True
+    @field_validator("images", mode="before")
+    @classmethod
+    def extract_image_paths(cls, value):
+        if isinstance(value, list) and all(hasattr(i, "image_url") for i in value):
+            return [i.image_url for i in value]
+        return value
 
-# Product
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------- Product Schemas ----------------
 
 class ProductBase(BaseModel):
     product_name: str
@@ -131,8 +161,16 @@ class ProductResponse(ProductBase):
     updated_at: Optional[datetime]
     variants: List[ProductVariantResponse] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------- Image Response ----------------
+
+class ProductImageResponse(BaseModel):
+    id: int
+    image_url: str
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Cart Item Schema
@@ -167,16 +205,6 @@ class ProductResponse(ProductBase):
 #     grand_total: float  
 #     created_at: datetime
 #     cart_items: List[CartItemResponse]
-
-
-    class Config:
-        from_attributes = True
-class ProductImageResponse(BaseModel):
-    id: int
-    image_url: str
-
-    class Config:
-        orm_mode = True
 
 
 
@@ -270,22 +298,78 @@ class OrderStatus(str, Enum):
 #     class Config:
 #         orm_mode = True
 
-#new schemas
+# shipping details schema 
+
+#  Base schema (no order_id here)
+class ShippingDetailsBase(BaseModel):
+    full_name: str
+    email: EmailStr
+    contact_information: str
+    additional_note: Optional[str] = None
+    address: str
+    state: str
+    city: str                     
+    country: str
+    postal_code: int             
+    shipping_date: Optional[datetime] = None
+
+#  Create schema (inherits base, no order_id)
+class ShippingDetailsCreate(ShippingDetailsBase):
+    pass
+
+#  Update schema 
+class ShippingDetailsUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    contact_information: Optional[str] = None
+    additional_note: Optional[str] = None
+    address: Optional[str] = None
+    state: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    postal_code: Optional[int] = None
+    shipping_date: Optional[datetime] = None
+
+# Shipping Response schema 
+class ShippingDetailsResponse(BaseModel):
+    id: int
+    order_id: int
+    user_id: int
+    full_name: str
+    email: EmailStr
+    contact_information: str
+    additional_note: Optional[str] = None
+    address: str
+    state: str
+    city: str
+    country: str
+    postal_code: int
+    shipping_date: Optional[datetime] = None
+    created_timestamp: Optional[datetime] = None
+    updated_timestamp: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+
 # -------- Order Status Enum --------
 class OrderStatus(str, Enum):
     pending = "pending"
+    confirmed = "confirmed"
     shipped = "shipped"
     delivered = "delivered"
     cancelled = "cancelled"
 
 
+
+
+
 # -------- OrderItem Schemas --------
 class OrderItemBase(BaseModel):
-
     product_id: int
     variant_id: int
     quantity: int
-
 
 class OrderItemCreate(OrderItemBase):
     pass
@@ -295,14 +379,13 @@ class OrderItemResponse(BaseModel):
     product_id: int
     variant_id: int
     quantity: int
-    mrp: float
     total_price: float
+    product_name: Optional[str] = None  # Name of the product
+    variant_attributes: Optional[Dict[str, Any]] = None  # Variant-specific attributes
+    variant_image: Optional[str] = None  # First image of the variant (if any)
 
-    # product: Optional[ProductResponse]
-    # variant: Optional[ProductVariantResponse]
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        orm_mode = True
 
 # -------- Order Schemas --------
 class OrderBase(BaseModel):
@@ -313,32 +396,42 @@ class OrderBase(BaseModel):
 
 class OrderCreate(OrderBase):
     order_items: List[OrderItemCreate]
+    shipping_details: ShippingDetailsCreate
+
+class OrderStatusResponse(BaseModel):
+    order_id: int
+    status: str
 
 class OrderResponse(OrderBase):
     id: int
     user_id: int
     user: Optional[UserResponse]
-    order_date: datetime 
     order_amount: float
-    shipping_charge: float
+    shipping_charge: float = 0  # If you're not yet using this in logic, keep default 0
     discount_amount: float
     final_amount: float
     cancel_reason: Optional[str]
     created_timestamp: datetime
     updated_timestamp: datetime
     order_items: List[OrderItemResponse]
-    # shipping_date:int
+    shipping_details: Optional[ShippingDetailsResponse] = None
+    order_status: OrderStatus
 
-    class Config:
-        orm_mode = True
+    @validator("order_status", pre=True)
+    def normalize_status(cls, v):
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 class OrderUpdate(BaseModel):
     order_status: Optional[OrderStatus] = None
     cancel_reason: Optional[str] = None
     shipping_date: Optional[datetime] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # -------- Cancel Order --------
@@ -350,11 +443,10 @@ class OrderCancelResponse(BaseModel):
     cancel_reason: Optional[str]
     order_status: OrderStatus
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-
+# -------- Coupon Schemas --------
 class CouponBase(BaseModel):
     code: str
     discount_type: Literal["percentage", "fixed"]
@@ -369,20 +461,28 @@ class CouponResponse(CouponBase):
     id: int
     is_active: bool
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ApplyCouponRequest(BaseModel):
     coupon_code: str
+
+
+# -------- Order Tracking --------
+class OrderTrackingResponse(BaseModel):
+    order_id: int
+    order_status: str
+    message: str
+    countdown: Optional[str] = None
+
 #end new schemas
 
 
-# reviews schema
+# Create Review Schema
 class ReviewCreate(BaseModel):
     product_id: int
     rating: int 
     description: str
-    email : EmailStr
+    email: EmailStr
 
 class ReviewResponse(BaseModel):
     id: int
@@ -393,29 +493,44 @@ class ReviewResponse(BaseModel):
     description: str
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
-# Review Update Schema
+# Response Review Schema
+class ProductReviewResponse(BaseModel):
+    id: int
+    product_id: int
+    user_id: int
+    email: str
+    rating: int
+    description: str
+    created_at: datetime
+    full_name: str                      
+    profile_picture: Optional[str] = None      
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Update Review Schema
 class ReviewUpdate(BaseModel):
     rating: Optional[int] = Field(ge=1, le=5)
     description: Optional[str] = Field(max_length=500)
 
-    class Config:
-        orm_mode = True
+    
+    model_config = ConfigDict(from_attributes=True)  # added for model config
+# schema for payment table
+import enum
+class PaymentMode(str, enum.Enum):
+    credit_card = "credit_card"
+    debit_card = "debit_card"
+    paypal = "paypal"
+    cash_on_delivery = "cash_on_delivery"
 
-# schema for pyment table
-
-class PaymentMode(str, Enum):
-    credit_card = "Credit Card"
-    debit_card = "Debit Card"
-    paypal = "PayPal"
-    cash_on_delivery = "Cash on Delivery"
 
 
 class PaymentBase(BaseModel):
     order_id: int
     stripe_payment_intent_id: Optional[str] = None
+    paypal_payment_intent_id: Optional[str] = None
+    stripe_checkout_session_id:Optional[str]=None
     stripe_customer_id: Optional[str] = None
     payment_method: PaymentMode
     currency: Optional[str] = "usd"
@@ -429,20 +544,23 @@ class PaymentCreate(PaymentBase):
     pass
 
 class PaymentIntentRequest(BaseModel):
-    amount: float
-    currency: str = "usd"
-    payment_method: PaymentMode 
-    metadata: Optional[dict] = None
     order_id: int
+    currency: str = "usd"
+    payment_method: PaymentMode
 
 class PaymentResponse(PaymentBase):
     id: int
     created_timestamp: datetime
     updated_timestamp: Optional[datetime]
 
-    class Config:
-        orm_mode = True
-
+    model_config = ConfigDict(from_attributes=True)
+class StripeCheckoutResponse(BaseModel):
+    payment_id: int
+    order_id: int
+    checkout_url: str
+    message: Optional[str] = None
+    amount: float
+    status: str
 # schema for payments logs
 
 class PaymentLogCreate(BaseModel):
@@ -455,59 +573,38 @@ class PaymentLogResponse(PaymentLogCreate):
     id: int
     timestamp: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }
 
 # Refund Payments Schema
 
+class RefundRequest(BaseModel):
+    order_id: int
+    reason: Optional[str] = None
 
 class RefundResponse(BaseModel):
     id: int
     order_id: int
-    stripe_refund_id: str
+    checkout_url: str
     amount: float
-    reason: str | None = None
     status: str
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
+
+# refund response
+class RefundResponse(BaseModel):
+    id: int
+    payment_id: int
+    amount: float
+    status: str
+    reason: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
-
-# shipping details schema 
-
-class ShippingDetailsBase(BaseModel):
-    order_id : int
-    contact_information: str
-    additional_note: Optional[str] = None
-    address: str
-    state:  str
-    country: str
-    shipping_date : Optional [str] = None
-
-class ShippingDetailsCreate(ShippingDetailsBase):
-    pass
-
-# shipping details update 
-
-class ShippingDetailsUpdate(BaseModel):
-    contact_information: Optional[str] = None
-    additional_note: Optional[str] = None
-    address: Optional[str] = None
-    state: Optional[str] = None
-    country: Optional[str] = None
-    shipping_date: Optional[datetime] = None
-
-# shipping details response
-
-class ShippingDetailsResponse(ShippingDetailsBase):
-    id : int
-    created_timestamp: datetime
-    updated_timestamp: Optional[datetime]
-
-    class config:
-        orm_mode: True
 
 
 

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, status, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status, Depends, BackgroundTasks, Request
 from fastapi_mail import FastMail, MessageSchema
 from pydantic import EmailStr
 from sqlalchemy.orm import Session
@@ -13,25 +13,48 @@ from fastapi.responses import RedirectResponse
 from app.routers import profile_address
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
+from app.rate_limiter import setup_rate_limiting
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+
+
+from dotenv import load_dotenv
+load_dotenv()
+
+
+
+
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+from app.routers.google_auth import router as outh2_router
 from app.routers.admin import router as admin_router
 from app.routers.categoryroute import router as category_router
 from app.routers.productroute import router as product_router
+from app.routers.sorting_product import router as sorting_router
 # from app.routers.cart import router as cart_router
 from app.routers.webhook import router as webhook_router
 from app.routers.payment import router as payment_router
 from app.routers.orders import router as order_router
 from app.routers.reviews import router as review_router
 from app.routers.shipping_details import router as shippingdetails_router
-from app.rate_limiter import setup_rate_limiting
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from app.routers.refund import router as refund
+from app.routers.website_logo import router as website_logo_router
 
 
 app=FastAPI()
 
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY"))
 app.mount("/media", StaticFiles(directory="media"), name="media")
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "default_secret_key"))
+templates = Jinja2Templates(directory="static/")
+
+@app.get("/")
+async def login(request: Request):
+
+    # return templates.TemplateResponse("pages/login/login.html", {"request": request})
+    return ("Successfully Login", {"request": request})  # 
 
 
 app.add_middleware(
@@ -86,7 +109,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
             status_code=status.HTTP_403_FORBIDDEN, detail="Your account is inactive"
         )
     
-    access_token = create_access_token(db_user.id)
+    access_token = create_access_token(db_user.id,role=db_user.role)
 
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -151,13 +174,17 @@ async def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_d
 
 # Routers  
 
+app.include_router(outh2_router)
 app.include_router(profile_address.router, prefix="/user", tags=["User Profile & Address"])
 app.include_router(admin_router)
+app.include_router(website_logo_router)
 app.include_router(product_router)
+app.include_router(sorting_router)
 app.include_router(category_router)
 app.include_router(review_router)
 # app.include_router(cart_router)
 app.include_router(order_router)
 app.include_router(shippingdetails_router)
-app.include_router(webhook_router)
 app.include_router(payment_router)
+app.include_router(webhook_router)
+app.include_router(refund)

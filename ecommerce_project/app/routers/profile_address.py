@@ -103,29 +103,42 @@ def get_my_address(db: Session = Depends(get_db), current_user=Depends(get_curre
         return {"message": "Address not found"}
     return address
 
-# Add Address (Max 2 Allowed)
+# Add Address 
 @router.post("/address", status_code=status.HTTP_201_CREATED)
-def add_address(address_data: AddressCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    existing_addresses = db.query(Address).filter(Address.user_id == current_user.id).count()
-    if existing_addresses >= 2:
-        raise HTTPException(status_code=400, detail="You can only add up to 2 addresses.")
-    address = Address(**address_data.model_dump(), user_id=current_user.id)
-    db.add(address)
+def add_or_update_address(
+    address_data: AddressCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    existing_address = db.query(Address).filter(Address.user_id == current_user.id).first()
+
+    if existing_address:
+        # Update the existing address
+        for key, value in address_data.model_dump().items():
+            setattr(existing_address, key, value)
+        db.commit()
+        db.refresh(existing_address)
+        return {"message": "Address updated successfully", "address": existing_address}
+    
+    # Create new address if none exists
+    new_address = Address(**address_data.model_dump(), user_id=current_user.id)
+    db.add(new_address)
     db.commit()
-    db.refresh(address)
-    return address
+    db.refresh(new_address)
+    return {"message": "Address added successfully", "address": new_address}
+
 
 #Update Address
-@router.put("/address", status_code=status.HTTP_200_OK)
-def update_address(address_data: AddressUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    address = db.query(Address).filter(Address.user_id == current_user.id).first()
+# @router.put("/address", status_code=status.HTTP_200_OK)
+# def update_address(address_data: AddressUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+#     address = db.query(Address).filter(Address.user_id == current_user.id).first()
     
-    if not address:
-        raise HTTPException(status_code=404, detail="Address not found.")
+#     if not address:
+#         raise HTTPException(status_code=404, detail="Address not found.")
 
-    for key, value in address_data.model_dump(exclude_unset=True).items():
-        setattr(address, key, value)
+#     for key, value in address_data.model_dump(exclude_unset=True).items():
+#         setattr(address, key, value)
 
-    db.commit()
-    db.refresh(address)
-    return address
+#     db.commit()
+#     db.refresh(address)
+#     return address

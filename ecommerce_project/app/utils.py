@@ -24,3 +24,10 @@ def verify_reset_token(token: str):
         return None
     except jwt.InvalidTokenError:
         return None
+
+# Check if user has a specific permission
+def has_permission(user, permission_name: str) -> bool:
+    
+    if not user.role or not user.role.permissions:
+        return False
+    return any(p.name == permission_name for p in user.role.permissions)

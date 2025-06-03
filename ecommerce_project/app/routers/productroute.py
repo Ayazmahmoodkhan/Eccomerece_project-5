@@ -7,9 +7,11 @@ from app.schemas import  ProductCreate,ProductResponse, ProductVariantResponse, 
 from app.database import get_db
 from app.auth import get_current_user
 from app.routers.admin import admin_required
-from typing import Optional, List
+from typing import Optional, List, Union
+from typing import Optional, List, Union
 from uuid import uuid4
 import os, uuid, json, csv
+
 
 
 
@@ -21,7 +23,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(ERROR_DIR, exist_ok=True)
 
 # Add Products
-
 @router.post("/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 async def add_product(
     product_name: str = Form(...),
@@ -71,49 +72,45 @@ async def add_product(
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail=f"Variant at index {idx} has invalid JSON format.")
 
-            required_fields = ["price", "stock"]
-            for field in required_fields:
-                if field not in variant_data:
-                    raise HTTPException(status_code=400, detail=f"'{field}' is required in variant at index {idx}")
-
-            attributes = variant_data.get("attributes", {})
-            price = variant_data["price"]
-            stock = variant_data["stock"]
-            discount = variant_data.get("discount", 0)
-            shipping_time = variant_data.get("shipping_time")
-            image_count = variant_data.get("image_count", 1)
-
-        # ----- Field validations -----
-        if not isinstance(price, (int, float)) or price < 0:
-            raise HTTPException(status_code=400, detail=f"Invalid 'price' in variant at index {idx}")
-
-        if not isinstance(stock, int) or stock < 0:
-            raise HTTPException(status_code=400, detail=f"Invalid 'stock' in variant at index {idx}")
-
-        if not isinstance(discount, int) or not (0 <= discount <= 100):
-            raise HTTPException(status_code=400, detail=f"'discount' must be between 0 and 100 at index {idx}")
-
-        if shipping_time is not None and (not isinstance(shipping_time, int) or shipping_time < 0):
-            raise HTTPException(status_code=400, detail=f"Invalid 'shipping_time' in variant at index {idx}")
-
-        if not isinstance(attributes, dict):
-            raise HTTPException(status_code=400, detail=f"'attributes' must be a dictionary in variant at index {idx}")
+            if isinstance(variant_data, dict):
+                if not isinstance(variant_data, dict):
+                    raise HTTPException(status_code=400, detail=f"Invalid variant data format at index {idx}. Expected a dictionary.")
         
-        if "color" not in attributes:
-            raise HTTPException(status_code=400, detail=f"Missing 'color' attribute in variant at index {idx}")
+                price = variant_data.get("price")
+                stock = variant_data.get("stock")
+                discount = variant_data.get("discount", 0)
+                shipping_time = variant_data.get("shipping_time")
+                image_count = variant_data.get("image_count", 1)
 
-        # ----- Check if color is a valid string (if it exists) -----
-        if "color" in attributes and (not isinstance(attributes["color"], str) or not attributes["color"]):
-            raise HTTPException(status_code=400, detail=f"Invalid 'color' attribute in variant at index {idx}")
+                # Validate fields
+                if price is None or not isinstance(price, (int, float)) or price < 0:
+                    raise HTTPException(status_code=400, detail=f"Invalid 'price' in variant at index {idx}")
+                if stock is None or not isinstance(stock, int) or stock < 0:
+                    raise HTTPException(status_code=400, detail=f"Invalid 'stock' in variant at index {idx}")
+                if not (0 <= discount <= 100):
+                    raise HTTPException(status_code=400, detail=f"'discount' must be between 0 and 100 at index {idx}")
+                if shipping_time is not None and (not isinstance(shipping_time, int) or shipping_time < 0):
+                    raise HTTPException(status_code=400, detail=f"Invalid 'shipping_time' in variant at index {idx}")
+                if not isinstance(image_count, int) or image_count < 1:
+                    raise HTTPException(status_code=400, detail=f"Invalid 'image_count' in variant at index {idx}")
+            
+            direct_fields = {"price", "stock", "discount", "shipping_time", "image_count"}
+            attributes = {k: str(v) if v is not None else "" for k, v in variant_data.items() if k not in direct_fields}
+            # Validate fields
+            if price is None or not isinstance(price, (int, float)) or price < 0:
+                raise HTTPException(status_code=400, detail=f"Invalid 'price' in variant at index {idx}")
+            if stock is None or not isinstance(stock, int) or stock < 0:
+                raise HTTPException(status_code=400, detail=f"Invalid 'stock' in variant at index {idx}")
+            if not (0 <= discount <= 100):
+                raise HTTPException(status_code=400, detail=f"'discount' must be between 0 and 100 at index {idx}")
+            if shipping_time is not None and (not isinstance(shipping_time, int) or shipping_time < 0):
+                raise HTTPException(status_code=400, detail=f"Invalid 'shipping_time' in variant at index {idx}")
+            if not isinstance(image_count, int) or image_count < 1:
+                raise HTTPException(status_code=400, detail=f"Invalid 'image_count' in variant at index {idx}")
+            if "color" not in attributes:
+                raise HTTPException(status_code=400, detail=f"Missing 'color' attribute in variant at index {idx}")
 
-        if not isinstance(image_count, int) or image_count < 1:
-            raise HTTPException(status_code=400, detail=f"Invalid 'image_count' in variant at index {idx}")
-
-            # Extract dynamic attributes
-        direct_fields = {"price", "stock", "discount", "shipping_time", "image_count"}
-        attributes = {k: v for k, v in variant_data.items() if k not in direct_fields}
-
-        new_variant = ProductVariant(
+            new_variant = ProductVariant(
                 product_id=new_product.id,
                 price=price,
                 stock=stock,
@@ -121,55 +118,48 @@ async def add_product(
                 shipping_time=shipping_time,
                 attributes=attributes
             )
-        db.add(new_variant)
-        db.flush()
-        db.refresh(new_variant)    
+            db.add(new_variant)
+            db.flush()
+            db.refresh(new_variant)
 
-        variant_image_urls = []
-        if len(variant_images) < image_count:
-            raise HTTPException(status_code=400, detail=f"Not enough images provided for variant at index {idx}. Expected {image_count} images, but received {len(variant_images)}.")
+            variant_image_urls = []
 
-        if len(variant_images) > image_count:
-            raise HTTPException(status_code=400, detail=f"Too many images provided for variant at index {idx}. Expected {image_count} images, but received {len(variant_images)}.")
+            if len(variant_images) - image_index < image_count:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Too many images provided for variant at index {idx}. Expected {image_count}, but got {len(variant_images) - image_index}"
+                )
 
-        for _ in range(image_count):
-            if image_index >= len(variant_images):
-                raise HTTPException(status_code=400, detail=f"Not enough images provided for variant at index {idx}")
+            for _ in range(image_count):
+                image = variant_images[image_index]
+                short_id = uuid.uuid4().hex[:8]
+                clean_filename = image.filename.replace(" ", "_").lower()
+                filename = f"{short_id}_{clean_filename}"
+                file_path = os.path.join(UPLOAD_DIR, filename)
 
-        for _ in range(image_count):
-            if image_index >= len(variant_images):
-                raise HTTPException(status_code=400, detail=f"Not enough images provided for variant at index {idx}")
-
-            image = variant_images[image_index]
-            short_id = uuid.uuid4().hex[:8]  
-            clean_filename = image.filename.replace(" ", "_").lower()
-            filename = f"{short_id}_{clean_filename}"
-            file_path = os.path.join(UPLOAD_DIR, filename)
-
-            with open(file_path, "wb") as buffer:
-                buffer.write(await image.read())
+                with open(file_path, "wb") as buffer:
+                    buffer.write(await image.read())
 
                 image_url = f"/media/uploads/{filename}"
                 db.add(ProductImage(variant_id=new_variant.id, image_url=image_url))
                 variant_image_urls.append(image_url)
                 image_index += 1
 
-        # ----- Build variant response -----
-        created_variants.append({
-            "id": new_variant.id,
-            "price": price,
-            "stock": stock,
-            "discount": discount,
-            "shipping_time": shipping_time,
-            "attributes": attributes,
-            "images": variant_image_urls
-        })
+            created_variants.append({
+                "id": new_variant.id,
+                "price": price,
+                "stock": stock,
+                "discount": discount,
+                "shipping_time": shipping_time,
+                "attributes": attributes,
+                "images": variant_image_urls
+            })
 
         db.commit()
 
     except Exception as e:
         db.rollback()
-        raise e
+        raise HTTPException(status_code=500, detail=str(e))
 
     return ProductResponse(
         id=new_product.id,
@@ -185,7 +175,10 @@ async def add_product(
         images=[]
     )
 
+
 # Create Products in Bulk Through CSV File
+# Add celery 
+
 
 def save_image(file: UploadFile, product_name: str, attributes: dict) -> str:
     ext = os.path.splitext(file.filename)[1]
@@ -219,7 +212,7 @@ async def upload_products_csv(
 
     for idx, row in enumerate(reader):
         try:
-            # ----- Validate required fields -----
+            # Validate required fields 
             required_fields = ["product_name", "brand", "is_feature", "category_id", "description",
                                "price", "stock", "attributes", "image_filenames"]
             for field in required_fields:
@@ -242,7 +235,7 @@ async def upload_products_csv(
             if not category:
                 raise ValueError(f"Category ID {category_id} does not exist")
 
-            # ----- Check if product already created -----
+            # Check if product already created 
             product_key = f"{product_name}_{category_id}"
             if product_key in product_cache:
                 new_product = product_cache[product_key]
@@ -261,7 +254,7 @@ async def upload_products_csv(
                 db.refresh(new_product)
                 product_cache[product_key] = new_product
 
-            # ----- Create Variant -----
+            # Create Variant 
             new_variant = ProductVariant(
                 product_id=new_product.id,
                 price=price,
@@ -274,7 +267,7 @@ async def upload_products_csv(
             db.flush()
             db.refresh(new_variant)
 
-            # ----- Save Images -----
+            # Save Images 
             for img_name in image_filenames:
                 if img_name not in image_map:
                     raise ValueError(f"Image file '{img_name}' not found in upload")
@@ -289,7 +282,7 @@ async def upload_products_csv(
             row["error"] = str(e)
             error_rows.append(row)
 
-    # ----- Save errors to CSV -----
+    #  Save errors to CSV 
     error_file_path = None
     if error_rows:
         error_file_path = os.path.join(ERROR_DIR, f"errors_{uuid4().hex[:6]}.csv")
@@ -305,6 +298,42 @@ async def upload_products_csv(
         "error_details": error_rows[:5]
     }
 
+from app.tasks import process_bulk_upload
+import base64
+
+@router.post("/celery-bulk-upload", status_code=status.HTTP_202_ACCEPTED)
+async def upload_products_csv(
+    file: UploadFile = File(...),
+    images: List[UploadFile] = File(...),
+    admin=Depends(admin_required)
+):
+    if admin.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can add products")
+
+    content = await file.read()
+
+    image_data = {}
+    for img in images:
+        image_data[img.filename] = await img.read()
+
+    task = process_bulk_upload.delay(content.decode("utf-8"), image_data, admin.id)
+
+    return {
+        "message": "Upload task started",
+        "task_id": task.id
+    }
+
+from celery.result import AsyncResult
+from app.celery_worker import celery_app
+
+@router.get("/bulk-upload/status/{task_id}")
+def get_upload_status(task_id: str):
+    res = AsyncResult(task_id, app=celery_app)
+    return {
+        "task_id": task_id,
+        "status": res.status,
+        "result": res.result if res.ready() else None
+    }
 
 # Get only featured products
 @router.get("/featuredproducts", response_model=List[ProductResponse])
@@ -379,7 +408,8 @@ def get_products(db: Session = Depends(get_db)):
     return product_responses
 
 # GET product by ID
-
+from fastapi import Path
+from typing_extensions import Annotated
 @router.get("/{product_id}", response_model=ProductResponse)
 def get_product(product_id: Annotated[int, Path(ge=1)], db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == product_id).first()
@@ -460,166 +490,175 @@ def get_products_by_category(category_id: Annotated[int, Path(ge=1)], db: Sessio
     return response
 
 
-@router.delete("/products/{product_id}")
+@router.delete("/{product_id}", status_code=status.HTTP_202_ACCEPTED)
 def delete_product(product_id: int, db: Session = Depends(get_db), admin: dict = Depends(admin_required)):
+    if admin.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can delete products")
+
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+
     # Step 1: Delete related reviews
     db.query(Review).filter_by(product_id=product_id).delete(synchronize_session=False)
+
+    # Step 2: Delete related product images
     db.query(ProductImage).filter(ProductImage.variant_id.in_(
-        db.query(ProductVariant.id).filter_by(product_id=product_id))).delete(synchronize_session=False)
-    db.query(ProductVariant).filter_by(product_id=product_id).delete()
+        db.query(ProductVariant.id).filter_by(product_id=product_id)
+    )).delete(synchronize_session=False)
+    
+    db.query(ProductVariant).filter_by(product_id=product_id).delete(synchronize_session=False)
+
     db.delete(product)
     db.commit()
-    return {"detail": "Product deleted successfully"}
+
+    return {"message": "Product deleted successfully"}
 
 
 #update the product
-@router.put("/products/{product_id}", response_model=ProductResponse)
+
+@router.put("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_202_ACCEPTED)
 async def update_product(
     product_id: int,
-    product_name: Optional[str] = Form(None),
-    brand: Optional[str] = Form(None),
-    category_id: Optional[int] = Form(None),
-    description: Optional[str] = Form(None),
-    variants: Optional[List[str]] = Form(None),
-    variant_images: Optional[List[UploadFile]] = File(None),
+    product_name: Annotated[str, Form(...)],
+    brand: Annotated[str, Form(...)],
+    is_feature: Annotated[bool, Form(...)],
+    category_id: Annotated[int, Form(...)],
+    description: Annotated[str, Form(...)],
+    variants: Annotated[List[str], Form()],
+    variant_images: Annotated[List[UploadFile], File()] = [],
+    variant_image_links: Annotated[List[str], Form()] = [],
     admin: dict = Depends(admin_required),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    # Check if product exists
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can update products")
+
+    if not variants:
+        raise HTTPException(status_code=400, detail="At least one variant is required")
+
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Update basic product fields if provided
-    if product_name:
-        if not isinstance(product_name, str) or len(product_name.strip()) == 0:
-            raise HTTPException(status_code=400, detail="Invalid product name")
-        product.product_name = product_name.strip('"')
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=400, detail=f"Category ID {category_id} does not exist")
 
-    if brand:
-        if not isinstance(brand, str) or len(brand.strip()) == 0:
-            raise HTTPException(status_code=400, detail="Invalid brand")
-        product.brand = brand.strip('"')
-
-    if description:
-        if not isinstance(description, str) or len(description.strip()) == 0:
-            raise HTTPException(status_code=400, detail="Invalid description")
-        product.description = description.strip('"')
-
-    if category_id:
-        category = db.query(Category).filter(Category.id == category_id).first()
-        if not category:
-            raise HTTPException(status_code=400, detail="Category not found")
-        product.category_id = category_id
-
+    # Update product fields
+    product.product_name = product_name.strip()
+    product.brand = brand.strip()
+    product.description = description.strip()
+    product.category_id = category_id
+    product.is_feature = is_feature
     db.commit()
-    db.refresh(product)
 
-    created_variants = []
+    # Delete old variants and images only if new images or links are provided
+    if variant_images or variant_image_links:
+        old_variant_ids = [v.id for v in db.query(ProductVariant).filter_by(product_id=product.id).all()]
+        db.query(ProductImage).filter(ProductImage.variant_id.in_(old_variant_ids)).delete(synchronize_session=False)
+        db.query(ProductVariant).filter(ProductVariant.id.in_(old_variant_ids)).delete(synchronize_session=False)
+        db.commit()
+
     image_index = 0
+    link_index = 0
+    created_variants = []
 
-    if variants:
-        # Remove old variants and images
-        db.query(ProductImage).filter(ProductImage.variant_id.in_(
-            db.query(ProductVariant.id).filter_by(product_id=product_id)
-        )).delete(synchronize_session=False)
-
-        db.query(ProductVariant).filter_by(product_id=product_id).delete()
-
+    try:
         for idx, variant_str in enumerate(variants):
             try:
                 variant_data = json.loads(variant_str)
             except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail=f"Variant at index {idx} has invalid JSON format.")
+                raise HTTPException(status_code=400, detail=f"Variant at index {idx} has invalid JSON format")
 
-            # Validate variant data using ProductVariantCreate model
-            try:
-                variant = ProductVariantCreate(**variant_data)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid data for variant at index {idx}: {e}")
+            price = variant_data.get("price")
+            stock = variant_data.get("stock")
+            discount = variant_data.get("discount", 0)
+            shipping_time = variant_data.get("shipping_time")
+            image_count = variant_data.get("image_count", 1)
 
-            attributes = {k: v for k, v in variant_data.items() if k not in {"price", "stock", "discount", "shipping_time", "image_count"}}
+            direct_fields = {"price", "stock", "discount", "shipping_time", "image_count"}
+            attributes = {k: str(v) if v is not None else "" for k, v in variant_data.items() if k not in direct_fields}
+
+            if price is None or not isinstance(price, (int, float)) or price < 0:
+                raise HTTPException(status_code=400, detail=f"Invalid 'price' in variant at index {idx}")
+            if stock is None or not isinstance(stock, int) or stock < 0:
+                raise HTTPException(status_code=400, detail=f"Invalid 'stock' in variant at index {idx}")
+            if not (0 <= discount <= 100):
+                raise HTTPException(status_code=400, detail=f"'discount' must be between 0 and 100 at index {idx}")
+            if shipping_time is not None and (not isinstance(shipping_time, int) or shipping_time < 0):
+                raise HTTPException(status_code=400, detail=f"Invalid 'shipping_time' in variant at index {idx}")
+            if not isinstance(image_count, int) or image_count < 1:
+                raise HTTPException(status_code=400, detail=f"Invalid 'image_count' in variant at index {idx}")
+            if "color" not in attributes:
+                raise HTTPException(status_code=400, detail=f"Missing 'color' attribute in variant at index {idx}")
+
             new_variant = ProductVariant(
                 product_id=product.id,
-                price=variant.price,
-                stock=variant.stock,
-                discount=variant.discount,
-                shipping_time=variant.shipping_time,
+                price=price,
+                stock=stock,
+                discount=discount,
+                shipping_time=shipping_time,
                 attributes=attributes
             )
             db.add(new_variant)
-            db.commit()
+            db.flush()
             db.refresh(new_variant)
+            try: 
+                variant_image_urls = []
+                total_available = min(len(variant_images) - image_index, image_count) + min(len(variant_image_links) - link_index, image_count)
 
-            image_count = variant.image_count
-            image_urls = []
-            for _ in range(image_count):
-                if variant_images and image_index < len(variant_images):
-                    image = variant_images[image_index]
-                    filename = f"{uuid.uuid4()}_{image.filename}"
-                    file_path = os.path.join(UPLOAD_DIR, filename)
-                    with open(file_path, "wb") as buffer:
-                        buffer.write(await image.read())
-                    image_url = f"/static/uploads/{filename}"
-                    db.add(ProductImage(variant_id=new_variant.id, image_url=image_url))
-                    image_urls.append(image_url)
-                    image_index += 1
+                if total_available < image_count:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Not enough images for variant at index {idx}. Expected: {image_count}, provided: {total_available}"
+                    )
 
+                # Interleave files and links
+                for i in range(image_count):
+                    if i % 2 == 0 and image_index < len(variant_images):  # Use file for even indices
+                        image = variant_images[image_index]
+                        short_id = uuid.uuid4().hex[:8]
+                        clean_filename = image.filename.replace(" ", "_").lower()
+                        filename = f"{short_id}_{clean_filename}"
+                        file_path = os.path.join(UPLOAD_DIR, filename)
+
+                        try:
+                            with open(file_path, "wb") as buffer:
+                                buffer.write(await image.read())
+                        except Exception:
+                            raise HTTPException(status_code=500, detail="Failed to save uploaded image file")
+
+                        image_url = f"/media/uploads/{filename}"
+                        db.add(ProductImage(variant_id=new_variant.id, image_url=image_url))
+                        variant_image_urls.append(image_url)
+                        image_index += 1
+
+                    elif link_index < len(variant_image_links):  # Use link for odd indices or if no files left
+                        image_url = variant_image_links[link_index].strip()
+                        db.add(ProductImage(variant_id=new_variant.id, image_url=image_url))
+                        variant_image_urls.append(image_url)
+                        link_index += 1
+
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Images missing for variant at index {idx}")
+            except Exception as e:
+                db.rollback()
+                raise HTTPException(status_code=500, detail=f"Update Failed {str(e)}")
             created_variants.append({
                 "id": new_variant.id,
-                "price": new_variant.price,
-                "stock": new_variant.stock,
-                "discount": new_variant.discount,
-                "shipping_time": new_variant.shipping_time,
-                "attributes": new_variant.attributes,
-                "images": image_urls
+                "price": price,
+                "stock": stock,
+                "discount": discount,
+                "shipping_time": shipping_time,
+                "attributes": attributes,
+                "images": variant_image_urls
             })
 
-    return ProductResponse(
-        id=product.id,
-        sku=product.sku,
-        product_name=product.product_name,
-        brand=product.brand,
-        category_id=product.category_id,
-        description=product.description,
-        admin_id=product.admin_id,
-        created_at=product.created_at,
-        updated_at=product.updated_at,
-        variants= variants,
-        images=[]
-    )
+        db.commit()
 
-#get product by category
-@router.get("/category/{category_id}", response_model=List[ProductResponse])
-def get_products_by_category(category_id: Annotated[int, Path(ge=1)], db: Session = Depends(get_db)):
-    category = db.query(Category).filter(Category.id == category_id).first()
-    if not category:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Category with ID {category_id} does not exist."
-        )
-    products = db.query(Product).filter(Product.category_id == category_id).all()
-    response = []
-    for product in products:
-        variants = db.query(ProductVariant).filter_by(product_id=product.id).all()
-        variant_list = []
-        for variant in variants:
-            images = db.query(ProductImage).filter_by(variant_id=variant.id).all()
-            image_urls = [img.image_url for img in images]
-            variant_list.append({
-                "id": variant.id,
-                "price": variant.price,
-                "stock": variant.stock,
-                "discount": variant.discount,
-                "shipping_time": variant.shipping_time,
-                "attributes": variant.attributes,
-                "images": image_urls
-            })
-
-        response.append(ProductResponse(
+        return ProductResponse(
             id=product.id,
             sku=product.sku,
             product_name=product.product_name,
@@ -627,13 +666,20 @@ def get_products_by_category(category_id: Annotated[int, Path(ge=1)], db: Sessio
             category_id=product.category_id,
             description=product.description,
             admin_id=product.admin_id,
+            is_feature=product.is_feature,
             created_at=product.created_at,
             updated_at=product.updated_at,
-            variants=variant_list,
-            images=[]
-        ))
+            variants=created_variants,
+            images=[]  
+        )
 
-    return response
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
+
+
+
 
 # Filter Products by Rating
 
@@ -650,13 +696,50 @@ def get_products_by_rating(
             func.avg(Review.rating).label("avg_rating")
         )
         .group_by(Review.product_id)
+        .subquery())
+#get unique brand for drop down
+@router.get("/brands/",response_model=List[str])
+def get_brands(db:Session=Depends(get_db)):
+    brands=db.query(Product.brand).distinct().all()
+    return [b[0] for b in brands]
+#filter products by brands
+@router.get("/filter/",response_model=List[ProductResponse])
+def get_products_by_brand(brand:str=None,db:Session=Depends(get_db)):
+    query=db.query(Product)
+    if brand:
+        query=query.filter(Product.brand==brand)
+    return query.all()
+
+from sqlalchemy import case, func, desc
+
+@router.get("/search/", response_model=List[ProductResponse])
+def search_products_by_name(
+    query: str,
+    min_rating: float = Query(0, ge=0, le=5),  # Default to 0, range from 0 to 5
+    db: Session = Depends(get_db)
+):
+    # Match priority: exact match (3), startswith (2), contains (1)
+    subquery = (
+        db.query(
+            Review.product_id,
+            func.avg(Review.rating).label("avg_rating")
+        )
+        .group_by(Review.product_id)
         .subquery()
+    )
+
+    match_score = case(
+        (Product.product_name.ilike(query), 3),
+        (Product.product_name.ilike(f"{query}%"), 2),
+        (Product.product_name.ilike(f"%{query}%"), 1),
+        else_=0
     )
 
     products = (
         db.query(Product)
         .join(subquery, Product.id == subquery.c.product_id)
-        .filter(subquery.c.avg_rating >= min_rating)
+        .filter(subquery.c.avg_rating >= min_rating)  # Filter by the min_rating
+        .order_by(match_score.desc())  # Sort by match score
         .all()
     )
 
@@ -689,29 +772,8 @@ def get_products_by_rating(
             created_at=product.created_at,
             updated_at=product.updated_at,
             variants=variant_list,
-            images=[]
+            images=[] 
         ))
 
     return product_responses
 
- 
-
-# Delete products by ID
-
-# @router.delete("/delete/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
-# def delete_product(
-#     product_id: int,
-#     admin: dict = Depends(admin_required),
-#     db: Session = Depends(get_db)
-# ):
-#     if admin.role != "admin":
-#         raise HTTPException(status_code=403, detail="Only admins can delete products")
-
-#     product = db.query(Product).filter(Product.id == product_id).first()
-#     if not product:
-#         raise HTTPException(status_code=404, detail="Product not found")
-
-#     db.delete(product)
-#     db.commit()
-
-#     return {"detail": f"Product with ID {product_id} has been deleted successfully"}

@@ -5,6 +5,7 @@ from app import models, schemas
 from app.database import get_db
 from app.auth import get_current_user
 from app.models import User
+from sqlalchemy import func
 
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
 
@@ -101,13 +102,62 @@ def delete_review(
     return {"detail": "Review deleted successfully"}
 
 # Get reviews for a product by product_id
-@router.get("/product_id/{product_id}", response_model=List[schemas.ReviewResponse])
+
+@router.get("/product_id/{product_id}", response_model=List[schemas.ProductReviewResponse])
 def get_reviews_by_product(
-    product_id: int, 
+    product_id: int,
     db: Session = Depends(get_db)
 ):
-    reviews = db.query(models.Review).filter(models.Review.product_id == product_id).all()
+    reviews = (
+        db.query(
+            models.Review.id,
+            models.Review.product_id,
+            models.Review.user_id,
+            models.User.email,
+            models.Review.rating,
+            models.Review.description,
+            models.Review.created_at,
+            func.coalesce(
+                models.UserProfile.first_name + "" + models.UserProfile.last_name,
+                models.User.name
+            ).label("full_name"),
+            models.UserProfile.profile_picture
+        )
+        .join(models.User, models.User.id == models.Review.user_id)
+        .outerjoin(models.UserProfile, models.UserProfile.user_id == models.User.id)
+        .filter(models.Review.product_id == product_id)
+        .all()
+    )
+
     if not reviews:
         raise HTTPException(status_code=404, detail="No reviews found for this product")
-    
+
+
     return reviews
+
+
+# Update reviews by user
+
+@router.put("/{review_id}", response_model=schemas.ReviewResponse)
+def update_review(
+    review_id: int,
+    review_data: schemas.ReviewUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    review = db.query(models.Review).filter(
+        models.Review.id == review_id,
+        models.Review.user_id == current_user.id
+    ).first()
+
+    if not review:
+        raise HTTPException(
+            status_code=404,
+            detail="Review not found or not yours"
+        )
+
+    review.rating = review_data.rating
+    review.description = review_data.description
+    db.commit()
+    db.refresh(review)
+    return review

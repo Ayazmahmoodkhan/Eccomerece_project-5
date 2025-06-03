@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, JSON, Boolean,TIMESTAMP, text, Enum, Date, ForeignKey, Float, DateTime, Text
+from sqlalchemy import Column, Integer, Table, String, JSON, Boolean,TIMESTAMP, text, Enum, Date, ForeignKey, Float, DateTime, Text
 from app.database import Base
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -7,21 +7,28 @@ from sqlalchemy.orm import relationship
 from pydantic import ConfigDict
 
 # Enums
-class UserRole(str, enum.Enum):
+class UserRole(str, Enum):
     admin = "admin"
     user = "user"
+    manager = "manager"
+    vendor = "vendor"
+    staff = "staff"
+
 
 class OrderStatus(str, enum.Enum):
-    pending = "pending"
-    shipped = "shipped"
-    delivered = "delivered"
-    cancelled = "cancelled"
+    pending = "Pending"
+    confirmed = "Confirmed"
+    shipped = "Shipped"
+    delivered = "Delivered"
+    cancelled = "Cancelled"
 
 class PaymentMode(str, enum.Enum):
-    credit_card = "Credit Card"
-    debit_card = "Debit Card"
-    paypal = "PayPal"
-    cash_on_delivery = "Cash on Delivery"
+    credit_card = "credit_card"
+    debit_card = "debit_card"
+    paypal = "paypal"
+    cash_on_delivery = "cash_on_delivery"
+
+
 
 class RatingEnum(int, enum.Enum):
     one_star = 1
@@ -29,6 +36,40 @@ class RatingEnum(int, enum.Enum):
     three_star = 3
     four_star = 4
     five_star = 5
+
+# website logo table
+class WebsiteLogo(Base):
+    __tablename__ = "website_logo"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    logo_path = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# Role Table
+role_permissions = Table(
+    "role_permissions",
+    Base.metadata,
+    Column("role_id", ForeignKey("roles.id"), primary_key=True),
+    Column("permission_id", ForeignKey("permissions.id"), primary_key=True),
+)
+
+class Role(Base):
+    __tablename__ = "roles"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+
+    permissions = relationship("Permission", secondary=role_permissions, back_populates="roles")
+    users = relationship("User", back_populates="role")
+
+class Permission(Base):
+    __tablename__ = "permissions"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+
+    roles = relationship("Role", secondary="role_permissions", back_populates="permissions")
+
 
 # User Table
 class User(Base):
@@ -39,7 +80,8 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
-    role = Column(Enum(UserRole), default=UserRole.user)
+    role_id = Column(Integer, ForeignKey("roles.id"))
+    role = relationship("Role", back_populates="users")
 
     # Relationships
     profile = relationship("UserProfile", back_populates="user", uselist=False)
@@ -72,6 +114,7 @@ class Address(Base):
     city = Column(String, nullable=False)
     state = Column(String, nullable=False)
     postal_code = Column(String, nullable=False)
+    country = Column(String, nullable=False)
 
     user = relationship("User", back_populates="addresses")
 
@@ -230,11 +273,12 @@ class Order(Base):
 
         # Relationships
         user = relationship("User", back_populates="orders")
-        payment = relationship("Payment", back_populates="order", uselist=False)
         order_items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
         shipping_details = relationship("ShippingDetails", back_populates="order", uselist=False)
         refunds = relationship("Refund", back_populates="order", cascade="all, delete")
         coupon = relationship("Coupon", back_populates="orders", uselist=False)
+        payments = relationship("Payment", back_populates="order", cascade="all, delete-orphan")
+
 from sqlalchemy.sql import func
     # Order Item Table
 class OrderItem(Base):
@@ -247,16 +291,14 @@ class OrderItem(Base):
 
         mrp = Column(Float, nullable=False)
         quantity = Column(Integer, nullable=False)
-        total_price = Column(Float, nullable=False)  # Optional but useful
+        total_price = Column(Float, nullable=False)  
 
         # Relationships
         order = relationship("Order", back_populates="order_items")
         product = relationship("Product", back_populates="order_items")
         variant = relationship("ProductVariant", back_populates="order_items")
 
-        class Config:
-            orm_mode = True
-
+       
 
 # Review Table
 
@@ -295,7 +337,9 @@ class Payment(Base):
 
     id = Column(Integer, primary_key=True, nullable=False)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, unique=True)
-    stripe_payment_intent_id = Column(String, nullable=False, unique=True)
+    stripe_payment_intent_id = Column(String, nullable=True, unique=True)
+    stripe_checkout_session_id = Column(String) 
+    paypal_payment_intent_id = Column(String, nullable=True, unique=True)
     stripe_customer_id = Column(String, nullable=True)
     payment_method = Column(String, nullable=False)
     currency = Column(String, default="usd")
@@ -306,8 +350,11 @@ class Payment(Base):
     created_timestamp = Column(TIMESTAMP(timezone=True), server_default=text("now()"))
     updated_timestamp = Column(TIMESTAMP(timezone=True), onupdate=text("now()"))
 
-    order = relationship("Order", back_populates="payment")
+   
     logs = relationship("PaymentLog", back_populates="payment", cascade="all, delete-orphan")
+    order = relationship("Order", back_populates="payments")
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+
 
 #payment log table    
 
@@ -332,7 +379,12 @@ class ShippingDetails(Base):
         ForeignKey(column="orders.id", ondelete="CASCADE", onupdate="CASCADE"),
         nullable=False,
     )
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    full_name = Column(String, nullable=False)
     contact_information = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    postal_code = Column(Integer, nullable=False)
+    city = Column(String, nullable=False)
     additional_note = Column(String, nullable=True)
     address = Column(String, nullable=False)
     state = Column(String, nullable=False)
@@ -341,7 +393,7 @@ class ShippingDetails(Base):
     created_timestamp = Column(TIMESTAMP(timezone=True), server_default=text("now()"))
     updated_timestamp = Column(TIMESTAMP(timezone=True), nullable=True)
 
-    order = relationship("Order", back_populates="shipping_details")
+    order = relationship("Order", back_populates="shipping_details", uselist=False)
 
 # Coupons table
 class Coupon(Base):
@@ -356,7 +408,10 @@ class Coupon(Base):
     orders = relationship("Order", back_populates="coupon")
 
 # Refunds Table
-
+class RefundStatus(str, enum.Enum):
+    requested = "requested"
+    approved = "approved"
+    rejected = "rejected"
 class Refund(Base):
     __tablename__ = "refunds"
 
@@ -365,7 +420,14 @@ class Refund(Base):
     stripe_refund_id = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
     reason = Column(Text, nullable=True)
-    status = Column(String, nullable=False)
+    status = Column(Enum(RefundStatus), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     order = relationship("Order", back_populates="refunds")
+
+class PaymentMethod(Base):
+    __tablename__ = "payment_methods"
+
+    id = Column(Integer, primary_key=True, index=True)
+    method = Column(Enum(PaymentMode), unique=True, nullable=False)
+    enabled = Column(Boolean, default=True)
